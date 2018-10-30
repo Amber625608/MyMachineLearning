@@ -3,6 +3,10 @@ import numpy as np
 import csv
 import re
 import os
+import random
+import time
+from functools import reduce
+import operator
 from cnnText import TextCNN
 from tensorflow.contrib import learn
 import tensorflow.contrib.keras as kr
@@ -49,22 +53,25 @@ for i_file,file in enumerate(files):
     y_target[i_file]=1
     y_text +=[y_target]*len(reviewText_clear) #生成目标值
     reviewText_clear.clear()
-
+print("【加载中】正在清洗数据")
 x_text = [clean_str(sent) for sent in x_text]
 
-'''
+
 #截断数据
 jieduan_data=80000
 x_text=x_text[0:jieduan_data]
 y_text=y_text[0:jieduan_data]
-'''
+''''''
 
 x_text_size=len(x_text)
 print("【加载完成】","导入所有评论")
 print("【统计】","评论总数：",len(y_text))
 
-
-
+#把句子换成单词
+x_text_word=[x.split(" ") for x in x_text]
+print("x_text_word is done")
+x_text_word_one=reduce(operator.add, x_text_word)#转换成一维
+print("x_text_word_one is done")
 
 #读取词向量
 def loadGloVe(glovePath):
@@ -76,12 +83,17 @@ def loadGloVe(glovePath):
     vocab_num.append(0)
     file = open(glovePath,'r',encoding='utf-8')
     line_i=1#词向量数
-    for line in file.readlines():
+    for i,line in enumerate(file.readlines()):
         row = line.strip().split(' ')
+        # 生成自己的小词库
+        if(row[0] not in x_text_word_one):
+            continue
         vocab.append(row[0])
         embd.append(row[1:])
         vocab_num.append(line_i)
         line_i+=1
+        if i%10000==0:
+            print("【加载中】",i,'/400000')
     print("【加载完成】",'Glove词向量导入完成')
     file.close()
     return vocab,embd,vocab_num
@@ -179,7 +191,7 @@ print("dict_word done")'''
 #把句子换成单词，再把单词换成对相应序号数，再填充至最大
 x_xuhao=[]
 
-x_text_word=[x.split(" ") for x in x_text]
+#x_text_word=[x.split(" ") for x in x_text]
 del x_text
 
 for i,juzi in enumerate(x_text_word):
@@ -195,11 +207,23 @@ for i,juzi in enumerate(x_text_word):
         print("【加载中】单词转序号：",i,"/",x_text_size)
 
 del x_text_word
+max_document_length_list=[len(x) for x in x_xuhao]
+print(max_document_length_list)
+max_document_length = max(max_document_length_list)#每个句子的最大单词数
+def Get_Average(list):
+   sum = 0
+   for item in list:
+      sum += item
+   return sum/len(list)
 
-max_document_length = max([len(x) for x in x_xuhao])#每个句子的最大单词数
-max_document_length=500
-x_xuhao_max=tf.contrib.keras.preprocessing.sequence.pad_sequences(x_xuhao,maxlen=max_document_length,padding='post',truncating='post',value = 0)
-print("maxreal:",len(x_xuhao_max[0]))
+ave_document_length =Get_Average(max_document_length_list)
+del max_document_length_list
+
+print("平均数:",ave_document_length)
+most_document_length=int(ave_document_length/0.25)#大约满足8成的数
+print("满足大部分长度的数:",most_document_length)
+#max_document_length=500
+x_xuhao_max=tf.contrib.keras.preprocessing.sequence.pad_sequences(x_xuhao,maxlen=most_document_length,padding='post',truncating='post',value = 0)
 del x_xuhao
 
 print("【加载完成】","设为相同长度完成")
@@ -295,7 +319,7 @@ y_train,y_test=rand_y[:fenge],rand_y[fenge:]
 #训练的模型
 print("【统计】","目标分类数:",i_file_all)
 cnn = TextCNN(
-                sequence_length=max_document_length, #每个句子里面的单词的数量长度
+                sequence_length=most_document_length, #每个句子里面的单词的数量长度
                 num_classes=i_file_all, #分为几类
                 vocab_size=vocab_size,
                 embedding_size=50,
@@ -307,7 +331,7 @@ cnn = TextCNN(
 print("【加载完成】","模型加载完成")
 #训练优化
 global_step = tf.Variable(0, name="global_step", trainable=False)
-optimizer = tf.train.AdamOptimizer(1e-3)
+optimizer = tf.train.AdamOptimizer(1e-4)
 grads_and_vars = optimizer.compute_gradients(cnn.loss)
 train_op = optimizer.apply_gradients(grads_and_vars, global_step=global_step)
 
@@ -325,11 +349,13 @@ def train_step(x_batch, y_batch):
 
     }
     #print("train_step  feed_dict is done")
+    since = time.time()
     _, step, loss, accuracy,eb = sess.run(
         [train_op, global_step,cnn.loss,cnn.accuracy,cnn.embedding_init],
         feed_dict)
+    time_elapsed = time.time() - since
     print(" step {}, loss {:g}, acc {:g}".format( step, loss, accuracy))
-
+    print("time:",time_elapsed)
 
 def dev_step(x_batch, y_batch):
     """
@@ -367,19 +393,30 @@ def batch_iter(data, batch_size, num_epochs, shuffle=True):
             end_index = min((batch_num + 1) * batch_size, data_size)
             yield shuffled_data[start_index:end_index]
 
-batches = batch_iter(list(zip(x_train, y_train)),50, 1)
+
+train_test_num=20  #每训练多少次测试一次
+train_batch_size=64 #每次训练的大小
+test_batch_size=256  #每次测试的大小
+test_random_num=int(len(x_test)/test_batch_size)-1  #测试的轮数
+print("test_random_num:",test_random_num)
+
+batches = batch_iter(list(zip(x_train, y_train)),train_batch_size, 1)
+#batches_test = batch_iter_test(list(zip(x_test, y_test)),test_batch_size, test_batch_num)
 print("【头大】","开始训练")
 for batch in batches:
     x_batch, y_batch = zip(*batch)
     train_step(x_batch, y_batch)
     current_step = tf.train.global_step(sess, global_step)
-    if current_step % 10 == 0:
+    if current_step % train_test_num == 0:
         print("\nEvaluation:")
-        x_test_batch,y_test_batch=x_test[0:200],y_test[0:200]
+        start_test=(random.randint(0,test_random_num)*test_batch_size)   #随机出的测试起始位置
+        end_test=start_test+test_batch_size
+        x_test_batch,y_test_batch=x_test[start_test:end_test],y_test[start_test:end_test]
         dev_step(x_test_batch, y_test_batch)#一次载入的数据太多?
         print("")
 
     if(current_step==1000):
-        break
+        pass
+        #break
 
 print("【结束】","All done")
